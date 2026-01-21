@@ -1,0 +1,16 @@
+gesdinet_jwt_refresh_token:
+    refresh_token_class: App\Entity\RefreshToken
+    ttl: 2592000
+    single_use: true
+    ttl_update: true
+    token_parameter_name: refresh_token
+    return_expiration: true
+    cookie:
+        enabled: false
+        http_only: true
+        secure: true
+        same_site: strict
+        path: /api/token/refresh
+        domain: null
+        remove_token_from_body: false
+

@@ -1,0 +1,14 @@
+api_platform:
+    title: SCMCS API
+    version: 1.0.0
+    defaults:
+        stateless: true
+        cache_headers:
+            vary: ['Content-Type', 'Authorization', 'Origin']
+    swagger:
+        api_keys: []
+        http_auth:
+            JWT:
+                scheme: bearer
+                bearerFormat: JWT
+        persist_authorization: true
