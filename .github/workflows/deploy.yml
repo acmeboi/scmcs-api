@@ -80,6 +80,7 @@ jobs:
         exclude: |
           .env
           **/cache/prod/** 
+          vendor/** 
           .git/** 
           .github/** 
           tests/**
