@@ -83,16 +83,14 @@ jobs:
         include: '**/*'
         exclude: |
           .env
-          **/cache/prod/** 
+          **/cache/** 
           .git/** 
           .github/** 
           tests/**
+          var/cache/**
+          var/log/**
 
     # Post-deployment cleanup (skip DB in CI)
     - name: Post-deployment cleanup
       run: echo "Skip DB in CI. Warmup will run on server."
-    
-    # Note: Production cache must be cleared manually after deployment
-    # Run on server: rm -rf var/cache/prod/* && php bin/console cache:warmup --env=prod --no-debug
-    # This fixes ParameterNotFoundException for '216' in API Platform routes
 
