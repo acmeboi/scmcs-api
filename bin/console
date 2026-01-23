@@ -12,9 +12,6 @@ if (!is_file(dirname(__DIR__).'/vendor/autoload_runtime.php')) {
     throw new LogicException('Symfony Runtime is missing. Try running "composer require symfony/runtime".');
 }
 
-// Load polyfill for PHP 8.4 functions (array_any) for PHP 8.2 compatibility
-require_once dirname(__DIR__).'/src/polyfill.php';
-
 require_once dirname(__DIR__).'/vendor/autoload_runtime.php';
 
 return function (array $context) {
