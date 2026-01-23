@@ -50,6 +50,19 @@ jobs:
     # Install dependencies
     - name: Install dependencies
       run: composer install --no-dev --optimize-autoloader --no-scripts
+    
+    # Check for generated parameter files (post-install validation)
+    - name: Check for parameter files
+      run: |
+        echo "Checking for generated parameter files..."
+        if [ -f "config/parameters.yml" ]; then
+          echo "Found config/parameters.yml - checking for invalid parameters..."
+          if grep -q "%216%" config/parameters.yml 2>/dev/null; then
+            echo "ERROR: Found %216% in parameters.yml"
+            exit 1
+          fi
+        fi
+        echo "No invalid parameters found in generated files"
 
     # Generate JWT keys
     - name: Generate JWT keys
@@ -83,12 +96,10 @@ jobs:
         include: '**/*'
         exclude: |
           .env
-          **/cache/** 
+          **/cache/prod/** 
           .git/** 
           .github/** 
           tests/**
-          var/cache/**
-          var/log/**
 
     # Post-deployment cleanup (skip DB in CI)
     - name: Post-deployment cleanup
