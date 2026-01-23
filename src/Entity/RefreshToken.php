@@ -26,7 +26,7 @@ class RefreshToken extends AbstractRefreshToken
     protected ?\DateTimeInterface $valid = null;
 
     #[ORM\ManyToOne(targetEntity: User::class, inversedBy: 'refreshTokens')]
-    #[ORM\JoinColumn(name: 'user_id', referencedColumnName: 'id', nullable: true, onDelete: 'CASCADE')]
+    #[ORM\JoinColumn(name: 'user_id', referencedColumnName: 'id', nullable: false, onDelete: 'CASCADE')]
     protected ?User $user = null;
 
     public function getUser(): ?User
