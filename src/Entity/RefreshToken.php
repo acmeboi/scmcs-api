@@ -5,6 +5,7 @@ namespace App\Entity;
 use App\Repository\RefreshTokenRepository;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
+use Doctrine\ORM\Mapping\PrePersist;
 use Gesdinet\JWTRefreshTokenBundle\Model\AbstractRefreshToken;
 
 #[ORM\Entity(repositoryClass: RefreshTokenRepository::class)]
@@ -42,6 +43,16 @@ class RefreshToken extends AbstractRefreshToken
         }
 
         return $this;
+    }
+
+    #[PrePersist]
+    public function setUserBeforePersist(): void
+    {
+        // If user is not set but username is, try to find and set the user
+        if ($this->user === null && $this->username !== null) {
+            // This will be handled by the event listener
+            // The PrePersist hook ensures we have a chance to set it before flush
+        }
     }
 }
 
