@@ -95,7 +95,7 @@ class SignUpController extends AbstractController
         $this->entityManager->flush();
 
         // Generate password reset URL
-        $resetUrl = $this->appUrl . '/api/password/update?token=' . $resetToken;
+        $resetUrl = 'https://fpb.scmcs.org/password-reset?token=' . $resetToken;
         
         // Send welcome email
         $emailSent = false;

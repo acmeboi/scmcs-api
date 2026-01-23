@@ -20,7 +20,7 @@ class EmailService
 
     public function sendWelcomeEmail(User $user, string $defaultPassword, string $resetToken): void
     {
-        $resetUrl = $this->appUrl . '/api/password/update?token=' . $resetToken;
+        $resetUrl = 'https://fpb.scmcs.org/password-reset?token=' . $resetToken;
 
         $email = (new Email())
             ->from('info@scmcs.org')
