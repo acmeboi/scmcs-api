@@ -35,6 +35,12 @@ services:
             $appUrl: '%env(APP_URL)%'
 
     # Register Doctrine EventSubscriber for RefreshToken
+    # This ensures the user is set on refresh tokens before they are persisted
     App\EventListener\RefreshTokenPrePersistSubscriber:
         tags:
             - { name: doctrine.event_subscriber, connection: default }
+    
+    # Disable autowiring for RefreshTokenCreatedListener (no longer needed)
+    App\EventListener\RefreshTokenCreatedListener:
+        autowire: false
+        autoconfigure: false
