@@ -66,6 +66,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(name: 'must_change_password', options: ['default' => false])]
     private ?bool $mustChangePassword = false;
 
+    #[ORM\OneToMany(targetEntity: \App\Entity\RefreshToken::class, mappedBy: 'user')]
+    private iterable $refreshTokens;
+
     public function __construct()
     {
         $this->createdAt = new \DateTime();
