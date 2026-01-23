@@ -62,6 +62,10 @@ jobs:
     # Configure JWT keys
     - name: Configure JWT keys
       run: echo "JWT keys generated. Skipping cache:clear in CI to avoid DB errors."
+    
+    # Clear cache (will be done on server after deployment)
+    - name: Note about cache clearing
+      run: echo "Cache will be cleared on production server after deployment"
 
     # Build the API Platform Metadata (Optional but recommended)
     - name: Build API Platform cache
