@@ -10,9 +10,6 @@ parameters:
     cors.allow_origin.resolved: 
         - '^https?://localhost(:[0-9]+)?$'
         - '^https?://.*\.scmcs\.org$'
-    # Dummy parameter to prevent ParameterNotFoundException for cached routes
-    # This is a workaround for stale cache that may reference non-existent parameters
-    '216': null
 
 services:
 
