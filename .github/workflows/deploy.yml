@@ -87,6 +87,7 @@ jobs:
           .git/** 
           .github/** 
           tests/**
+          vendor/**
 
     # Post-deployment cleanup (skip DB in CI)
     - name: Post-deployment cleanup

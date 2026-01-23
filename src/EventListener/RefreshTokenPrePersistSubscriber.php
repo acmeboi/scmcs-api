@@ -29,17 +29,29 @@ class RefreshTokenPrePersistSubscriber implements EventSubscriber
             return;
         }
 
+        // CRITICAL: user_id is NOT NULL, so we MUST set it before persist
         // Try to find user by username (email)
         $username = $entity->getUsername();
-        if ($username) {
-            $entityManager = $args->getObjectManager();
-            $userRepository = $entityManager->getRepository(User::class);
-            $user = $userRepository->findOneBy(['email' => $username]);
-            
-            if ($user instanceof User) {
-                $entity->setUser($user);
-            }
+        
+        if (!$username) {
+            // Username is required - this should never happen, but if it does, we can't proceed
+            throw new \RuntimeException('Cannot create refresh token: username is not set');
         }
+
+        $entityManager = $args->getObjectManager();
+        $userRepository = $entityManager->getRepository(User::class);
+        $user = $userRepository->findOneBy(['email' => $username]);
+        
+        if (!$user instanceof User) {
+            // User must exist - if not found, this is a critical error
+            throw new \RuntimeException(sprintf(
+                'Cannot create refresh token: User with email "%s" not found',
+                $username
+            ));
+        }
+
+        // Set the user - this is mandatory
+        $entity->setUser($user);
     }
 }
 

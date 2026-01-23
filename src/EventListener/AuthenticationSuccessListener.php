@@ -2,16 +2,32 @@
 
 namespace App\EventListener;
 
+use App\Entity\User;
 use Lexik\Bundle\JWTAuthenticationBundle\Event\AuthenticationSuccessEvent;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 
 #[AsEventListener(event: 'lexik_jwt_authentication.on_authentication_success', method: 'onAuthenticationSuccessResponse')]
 class AuthenticationSuccessListener
 {
+    public function __construct(
+        private TokenStorageInterface $tokenStorage
+    ) {
+    }
+
     public function onAuthenticationSuccessResponse(AuthenticationSuccessEvent $event): void
     {
         $data = $event->getData();
         $user = $event->getUser();
+
+        // Ensure the user is stored in token storage for refresh token creation
+        // This ensures RefreshTokenCreatedListener can access the user
+        if ($user instanceof User) {
+            $token = $this->tokenStorage->getToken();
+            if ($token) {
+                $token->setUser($user);
+            }
+        }
 
         // Get the Member profile if it exists
         $member = null;
