@@ -99,15 +99,19 @@ class SignUpController extends AbstractController
         
         // Send welcome email
         $emailSent = false;
+        $emailError = null;
         try {
             $this->emailService->sendWelcomeEmail($user, $defaultPassword, $resetToken);
             $emailSent = true;
         } catch (\Exception $e) {
             // Log error but don't fail the request
             // In production, you might want to queue this or handle differently
+            $emailError = $e->getMessage();
+            error_log('Failed to send welcome email: ' . $emailError);
+            error_log('Exception trace: ' . $e->getTraceAsString());
         }
 
-        return new JsonResponse([
+        $response = [
             'message' => $emailSent 
                 ? 'User account created successfully. Welcome email sent.' 
                 : 'User account created successfully. Email delivery failed - please use the credentials below.',
@@ -122,7 +126,14 @@ class SignUpController extends AbstractController
                 'expiresAt' => $user->getPasswordResetExpiresAt()?->format('Y-m-d H:i:s'),
             ],
             'note' => 'Please save these credentials securely. The password reset token expires in 24 hours.',
-        ], Response::HTTP_CREATED);
+        ];
+
+        // Include email error in development/debug mode
+        if ($emailError && ($_ENV['APP_ENV'] ?? 'prod') !== 'prod') {
+            $response['emailError'] = $emailError;
+        }
+
+        return new JsonResponse($response, Response::HTTP_CREATED);
     }
 }
 

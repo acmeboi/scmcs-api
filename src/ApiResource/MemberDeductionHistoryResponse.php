@@ -23,10 +23,18 @@ class MemberDeductionHistoryResponse
 {
     #[ApiProperty]
     #[Groups(['deduction_history:read'])]
-    public array $history = [];
+    public array $items = [];
+
+    #[ApiProperty]
+    #[Groups(['deduction_history:read'])]
+    public array $groupedByMonth = [];
 
     #[ApiProperty]
     #[Groups(['deduction_history:read'])]
     public array $summary = [];
+
+    #[ApiProperty]
+    #[Groups(['deduction_history:read'])]
+    public array $pagination = [];
 }
 

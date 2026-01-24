@@ -11,6 +11,7 @@ use App\Repository\LayyaRepository;
 use App\Repository\MonthlyDeductionRepository;
 use App\Repository\OutstandingRepository;
 use App\Repository\SoftLoanRepository;
+use App\Repository\TotalSavingsRepository;
 use App\Repository\WatandaRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -30,7 +31,8 @@ class MemberOutstandingLoansController extends AbstractController
         private SoftLoanRepository $softLoanRepository,
         private WatandaRepository $watandaRepository,
         private MonthlyDeductionRepository $monthlyDeductionRepository,
-        private OutstandingRepository $outstandingRepository
+        private OutstandingRepository $outstandingRepository,
+        private TotalSavingsRepository $totalSavingsRepository
     ) {
     }
 
@@ -50,16 +52,32 @@ class MemberOutstandingLoansController extends AbstractController
         $now = new \DateTime();
         $cards = [];
         $totalOutstanding = 0.0;
+        $totalPaid = 0.0;
+        $totalBalance = 0.0;
+
+        // SPECIAL REQUEST: Get latest TotalSavings date to filter active loans
+        // Active loan definition: status = 0 AND endDate >= maxDate (loan is not expired)
+        // Only show the latest active loan for each type
+        $latestTotalSavings = $this->totalSavingsRepository->createQueryBuilder('ts')
+            ->where('ts.member = :member')
+            ->setParameter('member', $member)
+            ->orderBy('ts.date', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        $maxDate = $latestTotalSavings?->getDate() ?? $now;
 
         // Helper function to calculate progress
-        $calculateProgress = function ($loan, $paidAmount = null, $hasEndDate = true) use ($now) {
+        $calculateProgress = function ($loan, $paidAmount = null, $hasEndDate = true) use ($now, $maxDate) {
             $startDate = $loan->getStartDate();
             $endDate = $hasEndDate && method_exists($loan, 'getEndDate') ? $loan->getEndDate() : null;
             $amount = is_string($loan->getAmount()) ? (float) $loan->getAmount() : ($loan->getAmount() ?? 0);
 
+            // Calculate percentage - cap at 100%
             $percentage = 0.0;
             if ($paidAmount !== null && $amount > 0) {
-                $percentage = ($paidAmount / $amount) * 100;
+                $percentage = min(100.0, ($paidAmount / $amount) * 100);
             }
 
             $timeProgress = 0.0;
@@ -67,18 +85,23 @@ class MemberOutstandingLoansController extends AbstractController
             
             if ($startDate && $endDate) {
                 $totalDays = $startDate->diff($endDate)->days;
-                $elapsedDays = $startDate->diff($now)->days;
+                // Use maxDate instead of now for elapsed days calculation
+                $elapsedDays = $startDate->diff($maxDate)->days;
                 
                 if ($totalDays > 0) {
-                    $timeProgress = min(100, ($elapsedDays / $totalDays) * 100);
+                    $timeProgress = min(100, max(0, ($elapsedDays / $totalDays) * 100));
                 }
                 
-                // Calculate months remaining
-                $monthsRemaining = max(0, (int) round(($endDate->diff($now)->days) / 30));
+                // Calculate months remaining from maxDate to endDate
+                if ($endDate > $maxDate) {
+                    $monthsRemaining = max(0, (int) round(($endDate->diff($maxDate)->days) / 30));
+                } else {
+                    $monthsRemaining = 0; // Loan period has ended
+                }
             } elseif ($startDate && !$endDate) {
-                // For loans without endDate, calculate months since start
-                $monthsElapsed = (int) round(($now->diff($startDate)->days) / 30);
-                $monthsRemaining = max(0, $monthsElapsed);
+                // For loans without endDate, calculate months since start (no remaining concept)
+                $monthsElapsed = (int) round(($maxDate->diff($startDate)->days) / 30);
+                $monthsRemaining = 0; // No end date means no remaining months
             }
 
             return [
@@ -90,247 +113,245 @@ class MemberOutstandingLoansController extends AbstractController
             ];
         };
 
-        // Get Balance loans (status = 1) - aggregate total
-        $balanceTotal = $this->balanceRepository->createQueryBuilder('b')
-            ->select('COALESCE(SUM(b.amount), 0)')
+        // SPECIAL REQUEST: Get Balance loans - separate by type, show only latest active loan per type
+        // Active loan = status = 0 AND endDate >= maxDate (loan is not expired)
+        // Get distinct balance types
+        $balanceTypes = $this->balanceRepository->createQueryBuilder('b')
+            ->select('DISTINCT b.type')
             ->where('b.member = :member')
-            ->andWhere('b.status = 1')
+            ->andWhere('b.status = 0')
+            ->andWhere('b.endDate >= :maxDate')
             ->setParameter('member', $member)
+            ->setParameter('maxDate', $maxDate)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getResult();
 
-        if ($balanceTotal > 0) {
-            // Get latest balance loan for progress calculation
+        foreach ($balanceTypes as $typeRow) {
+            $balanceType = $typeRow['type'];
+            
+            // Get latest active balance loan for this type
             $latestBalance = $this->balanceRepository->createQueryBuilder('b')
                 ->where('b.member = :member')
-                ->andWhere('b.status = 1')
+                ->andWhere('b.status = 0')
+                ->andWhere('b.type = :balanceType')
+                ->andWhere('b.endDate >= :maxDate')
                 ->setParameter('member', $member)
+                ->setParameter('balanceType', $balanceType)
+                ->setParameter('maxDate', $maxDate)
                 ->orderBy('b.startDate', 'DESC')
                 ->setMaxResults(1)
                 ->getQuery()
                 ->getOneOrNullResult();
 
-            $outstanding = $this->outstandingRepository->findOneBy(['member' => $member]);
-            $paidAmount = $outstanding ? ($outstanding->getContribution() ?? 0) : null;
-            
-            $progress = $latestBalance ? $calculateProgress($latestBalance, $paidAmount) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+            if ($latestBalance) {
+                $outstanding = $this->outstandingRepository->findOneBy(['member' => $member]);
+                $paidAmount = $outstanding ? ($outstanding->getContribution() ?? 0) : 0;
+                
+                $progress = $calculateProgress($latestBalance, $paidAmount);
+                
+                // Calculate balance (remaining amount)
+                $loanAmount = (float) $latestBalance->getAmount();
+                $balance = max(0, $loanAmount - $paidAmount);
 
-            $cards[] = [
-                'title' => 'Balance',
-                'amount' => (float) $balanceTotal,
-                'type' => 'balance',
-                'progress' => $progress,
-            ];
-            $totalOutstanding += (float) $balanceTotal;
+                $cards[] = [
+                    'title' => 'Balance (Type ' . $balanceType . ')',
+                    'amount' => $loanAmount,
+                    'type' => 'balance',
+                    'balanceType' => $balanceType,
+                    'progress' => $progress,
+                    'paidAmount' => round($paidAmount, 2),
+                    'balance' => round($balance, 2),
+                ];
+                $totalOutstanding += $loanAmount;
+                $totalPaid += $paidAmount;
+                $totalBalance += $balance;
+            }
         }
 
-        // Get Essential Commodity loans (status = 1)
-        $essentialTotal = $this->essentialCommodityRepository->createQueryBuilder('ec')
-            ->select('COALESCE(SUM(ec.amount), 0)')
+        // SPECIAL REQUEST: Get Essential Commodity loans - show only latest active loan
+        // Active loan = status = 0 AND endDate >= maxDate (loan is not expired)
+        $latestEssential = $this->essentialCommodityRepository->createQueryBuilder('ec')
             ->where('ec.member = :member')
-            ->andWhere('ec.status = 1')
+            ->andWhere('ec.status = 0')
+            ->andWhere('ec.endDate >= :maxDate')
             ->setParameter('member', $member)
+            ->setParameter('maxDate', $maxDate)
+            ->orderBy('ec.startDate', 'DESC')
+            ->setMaxResults(1)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getOneOrNullResult();
 
-        if ($essentialTotal > 0) {
-            // Get latest essential commodity loan for progress calculation
-            $latestEssential = $this->essentialCommodityRepository->createQueryBuilder('ec')
-                ->where('ec.member = :member')
-                ->andWhere('ec.status = 1')
-                ->setParameter('member', $member)
-                ->orderBy('ec.startDate', 'DESC')
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            $paidAmount = $latestEssential ? $this->getPaidAmountForLoan($member, 'essential', $latestEssential->getDate()) : null;
-            $progress = $latestEssential ? $calculateProgress($latestEssential, $paidAmount) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+        if ($latestEssential) {
+            $paidAmount = $this->getPaidAmountForLoan($member, 'essential', $latestEssential->getStartDate(), $latestEssential->getEndDate()) ?? 0;
+            $progress = $calculateProgress($latestEssential, $paidAmount);
+            
+            // Calculate balance (remaining amount)
+            $loanAmount = (float) $latestEssential->getAmount();
+            $balance = max(0, $loanAmount - $paidAmount);
 
             $cards[] = [
                 'title' => 'Essential Commodity',
-                'amount' => (float) $essentialTotal,
+                'amount' => $loanAmount,
                 'type' => 'essential',
                 'progress' => $progress,
+                'paidAmount' => round($paidAmount, 2),
+                'balance' => round($balance, 2),
             ];
-            $totalOutstanding += (float) $essentialTotal;
+            $totalOutstanding += $loanAmount;
+            $totalPaid += $paidAmount;
+            $totalBalance += $balance;
         }
 
-        // Get Fixed Asset Loan (status = 1)
-        $fixedAssetTotal = $this->fixedAssetLoanRepository->createQueryBuilder('fal')
-            ->select('COALESCE(SUM(fal.amount), 0)')
+        // SPECIAL REQUEST: Get Fixed Asset Loan - show only latest active loan
+        // Active loan = status = 0 AND endDate >= maxDate (loan is not expired)
+        $latestFixedAsset = $this->fixedAssetLoanRepository->createQueryBuilder('fal')
             ->where('fal.member = :member')
-            ->andWhere('fal.status = 1')
+            ->andWhere('fal.status = 0')
+            ->andWhere('fal.endDate >= :maxDate')
             ->setParameter('member', $member)
+            ->setParameter('maxDate', $maxDate)
+            ->orderBy('fal.startDate', 'DESC')
+            ->setMaxResults(1)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getOneOrNullResult();
 
-        if ($fixedAssetTotal > 0) {
-            // Get latest fixed asset loan for progress calculation
-            $latestFixedAsset = $this->fixedAssetLoanRepository->createQueryBuilder('fal')
-                ->where('fal.member = :member')
-                ->andWhere('fal.status = 1')
-                ->setParameter('member', $member)
-                ->orderBy('fal.startDate', 'DESC')
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            $paidAmount = $latestFixedAsset ? $this->getPaidAmountForLoan($member, 'fixedAsset', $latestFixedAsset->getDate()) : null;
-            $progress = $latestFixedAsset ? $calculateProgress($latestFixedAsset, $paidAmount) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+        if ($latestFixedAsset) {
+            $paidAmount = $this->getPaidAmountForLoan($member, 'fixedAsset', $latestFixedAsset->getStartDate(), $latestFixedAsset->getEndDate()) ?? 0;
+            $progress = $calculateProgress($latestFixedAsset, $paidAmount);
+            
+            // Calculate balance (remaining amount)
+            $loanAmount = (float) $latestFixedAsset->getAmount();
+            $balance = max(0, $loanAmount - $paidAmount);
 
             $cards[] = [
                 'title' => 'Fixed Asset Loan',
-                'amount' => (float) $fixedAssetTotal,
+                'amount' => $loanAmount,
                 'type' => 'fixed_asset',
                 'progress' => $progress,
+                'paidAmount' => round($paidAmount, 2),
+                'balance' => round($balance, 2),
             ];
-            $totalOutstanding += (float) $fixedAssetTotal;
+            $totalOutstanding += $loanAmount;
+            $totalPaid += $paidAmount;
+            $totalBalance += $balance;
         }
 
-        // Get Layya loans (status = 1)
-        $layyaTotal = $this->layyaRepository->createQueryBuilder('l')
-            ->select('COALESCE(SUM(l.amount), 0)')
+        // SPECIAL REQUEST: Get Layya loans - show only latest active loan
+        // Active loan = status = 0 AND endDate >= maxDate (loan is not expired)
+        $latestLayya = $this->layyaRepository->createQueryBuilder('l')
             ->where('l.member = :member')
-            ->andWhere('l.status = 1')
+            ->andWhere('l.status = 0')
+            ->andWhere('l.endDate >= :maxDate')
             ->setParameter('member', $member)
+            ->setParameter('maxDate', $maxDate)
+            ->orderBy('l.startDate', 'DESC')
+            ->setMaxResults(1)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getOneOrNullResult();
 
-        if ($layyaTotal > 0) {
-            // Get latest layya loan for progress calculation
-            $latestLayya = $this->layyaRepository->createQueryBuilder('l')
-                ->where('l.member = :member')
-                ->andWhere('l.status = 1')
-                ->setParameter('member', $member)
-                ->orderBy('l.startDate', 'DESC')
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            $paidAmount = $latestLayya ? $this->getPaidAmountForLoan($member, 'layya', $latestLayya->getDate()) : null;
-            $progress = $latestLayya ? $calculateProgress($latestLayya, $paidAmount) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+        if ($latestLayya) {
+            $paidAmount = $this->getPaidAmountForLoan($member, 'layya', $latestLayya->getStartDate(), $latestLayya->getEndDate()) ?? 0;
+            $progress = $calculateProgress($latestLayya, $paidAmount);
+            
+            // Calculate balance (remaining amount)
+            $loanAmount = (float) $latestLayya->getAmount();
+            $balance = max(0, $loanAmount - $paidAmount);
 
             $cards[] = [
                 'title' => 'Layya',
-                'amount' => (float) $layyaTotal,
+                'amount' => $loanAmount,
                 'type' => 'layya',
                 'progress' => $progress,
+                'paidAmount' => round($paidAmount, 2),
+                'balance' => round($balance, 2),
             ];
-            $totalOutstanding += (float) $layyaTotal;
+            $totalOutstanding += $loanAmount;
+            $totalPaid += $paidAmount;
+            $totalBalance += $balance;
         }
 
-        // Get Soft Loan (status = 1)
-        $softLoanTotal = $this->softLoanRepository->createQueryBuilder('sl')
-            ->select('COALESCE(SUM(sl.amount), 0)')
+        // SPECIAL REQUEST: Get Soft Loan - show only latest active loan
+        // Active loan = status = 0 AND endDate >= maxDate (loan is not expired)
+        $latestSoftLoan = $this->softLoanRepository->createQueryBuilder('sl')
             ->where('sl.member = :member')
-            ->andWhere('sl.status = 1')
+            ->andWhere('sl.status = 0')
+            ->andWhere('sl.endDate >= :maxDate')
             ->setParameter('member', $member)
+            ->setParameter('maxDate', $maxDate)
+            ->orderBy('sl.startDate', 'DESC')
+            ->setMaxResults(1)
             ->getQuery()
-            ->getSingleScalarResult();
+            ->getOneOrNullResult();
 
-        if ($softLoanTotal > 0) {
-            // Get latest soft loan for progress calculation
-            $latestSoftLoan = $this->softLoanRepository->createQueryBuilder('sl')
-                ->where('sl.member = :member')
-                ->andWhere('sl.status = 1')
-                ->setParameter('member', $member)
-                ->orderBy('sl.startDate', 'DESC')
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            $paidAmount = $latestSoftLoan ? $this->getPaidAmountForLoan($member, 'softloan', $latestSoftLoan->getDate()) : null;
-            $progress = $latestSoftLoan ? $calculateProgress($latestSoftLoan, $paidAmount) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+        if ($latestSoftLoan) {
+            $paidAmount = $this->getPaidAmountForLoan($member, 'softloan', $latestSoftLoan->getStartDate(), $latestSoftLoan->getEndDate()) ?? 0;
+            $progress = $calculateProgress($latestSoftLoan, $paidAmount);
+            
+            // Calculate balance (remaining amount)
+            $loanAmount = (float) $latestSoftLoan->getAmount();
+            $balance = max(0, $loanAmount - $paidAmount);
 
             $cards[] = [
                 'title' => 'Soft Loan',
-                'amount' => (float) $softLoanTotal,
+                'amount' => $loanAmount,
                 'type' => 'soft_loan',
                 'progress' => $progress,
+                'paidAmount' => round($paidAmount, 2),
+                'balance' => round($balance, 2),
             ];
-            $totalOutstanding += (float) $softLoanTotal;
+            $totalOutstanding += $loanAmount;
+            $totalPaid += $paidAmount;
+            $totalBalance += $balance;
         }
 
-        // Get Watanda loans (status = 1) - Note: amount is stored as string
-        $watandaLoans = $this->watandaRepository->createQueryBuilder('w')
+        // SPECIAL REQUEST: Get Watanda loans - show only latest active loan (no endDate, only startDate)
+        // Active loan = status = 0 (Watanda doesn't have endDate, so only check status)
+        $latestWatanda = $this->watandaRepository->createQueryBuilder('w')
             ->where('w.member = :member')
-            ->andWhere('w.status = 1')
+            ->andWhere('w.status = 0')
             ->setParameter('member', $member)
+            ->orderBy('w.startDate', 'DESC')
+            ->setMaxResults(1)
             ->getQuery()
-            ->getResult();
+            ->getOneOrNullResult();
 
-        $watandaTotal = 0.0;
-        foreach ($watandaLoans as $loan) {
-            $amount = is_string($loan->getAmount()) ? (float) $loan->getAmount() : ($loan->getAmount() ?? 0);
-            $watandaTotal += $amount;
-        }
-
-        if ($watandaTotal > 0) {
-            // Get latest watanda loan for progress calculation
-            $latestWatanda = $this->watandaRepository->createQueryBuilder('w')
-                ->where('w.member = :member')
-                ->andWhere('w.status = 1')
-                ->setParameter('member', $member)
-                ->orderBy('w.startDate', 'DESC')
-                ->setMaxResults(1)
-                ->getQuery()
-                ->getOneOrNullResult();
-
-            $paidAmount = $latestWatanda ? $this->getPaidAmountForLoan($member, 'watanda', $latestWatanda->getStartDate()) : null;
+        if ($latestWatanda) {
+            $loanAmount = is_string($latestWatanda->getAmount()) ? (float) $latestWatanda->getAmount() : ($latestWatanda->getAmount() ?? 0);
+            $paidAmount = $this->getPaidAmountForLoan($member, 'watanda', $latestWatanda->getStartDate(), null) ?? 0;
             // Watanda doesn't have endDate, so pass false for hasEndDate
-            $progress = $latestWatanda ? $calculateProgress($latestWatanda, $paidAmount, false) : [
-                'percentage' => 0.0,
-                'timeProgress' => 0.0,
-                'monthsRemaining' => 0,
-                'startDate' => null,
-                'endDate' => null,
-            ];
+            $progress = $calculateProgress($latestWatanda, $paidAmount, false);
+            
+            // Calculate balance (remaining amount)
+            $balance = max(0, $loanAmount - $paidAmount);
 
             $cards[] = [
                 'title' => 'Watanda',
-                'amount' => (float) $watandaTotal,
+                'amount' => $loanAmount,
                 'type' => 'watanda',
                 'progress' => $progress,
+                'paidAmount' => round($paidAmount, 2),
+                'balance' => round($balance, 2),
             ];
-            $totalOutstanding += $watandaTotal;
+            $totalOutstanding += $loanAmount;
+            $totalPaid += $paidAmount;
+            $totalBalance += $balance;
         }
 
-        // Add overall total card
+        // Add overall total card with paid and balance
+        $totalPercentage = $totalOutstanding > 0 ? min(100.0, ($totalPaid / $totalOutstanding) * 100) : 0.0;
         $cards[] = [
             'title' => 'Overall Total',
             'amount' => round($totalOutstanding, 2),
             'type' => 'total',
+            'paidAmount' => round($totalPaid, 2),
+            'balance' => round($totalBalance, 2),
+            'progress' => [
+                'percentage' => round($totalPercentage, 2),
+                'timeProgress' => 0.0,
+                'monthsRemaining' => 0,
+                'startDate' => null,
+                'endDate' => null,
+            ],
         ];
 
         $response = new MemberOutstandingLoansResponse();
@@ -341,10 +362,11 @@ class MemberOutstandingLoansController extends AbstractController
 
     /**
      * Get paid amount for a loan from monthly deductions
+     * Only counts payments between loan start date and end date (or current date if no end date)
      */
-    private function getPaidAmountForLoan($member, string $loanType, ?\DateTimeInterface $loanDate): ?float
+    private function getPaidAmountForLoan($member, string $loanType, ?\DateTimeInterface $loanStartDate, ?\DateTimeInterface $loanEndDate = null): ?float
     {
-        if (!$loanDate) {
+        if (!$loanStartDate) {
             return null;
         }
 
@@ -362,14 +384,20 @@ class MemberOutstandingLoansController extends AbstractController
 
         $field = $fieldMap[$loanType];
         
-        $paidAmount = $this->monthlyDeductionRepository->createQueryBuilder('md')
+        $qb = $this->monthlyDeductionRepository->createQueryBuilder('md')
             ->select('COALESCE(SUM(md.' . $field . '), 0)')
             ->where('md.member = :member')
-            ->andWhere('md.date >= :loanDate')
+            ->andWhere('md.date >= :loanStartDate')
             ->setParameter('member', $member)
-            ->setParameter('loanDate', $loanDate)
-            ->getQuery()
-            ->getSingleScalarResult();
+            ->setParameter('loanStartDate', $loanStartDate);
+        
+        // If loan has end date, only count payments up to end date
+        if ($loanEndDate) {
+            $qb->andWhere('md.date <= :loanEndDate')
+               ->setParameter('loanEndDate', $loanEndDate);
+        }
+        
+        $paidAmount = $qb->getQuery()->getSingleScalarResult();
 
         return (float) $paidAmount;
     }
